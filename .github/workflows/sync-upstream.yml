@@ -86,9 +86,7 @@ jobs:
       - name: Install upstream deps
         if: steps.check.outputs.needed == 'true'
         working-directory: Sub-Store/backend
-        run: 
-         pnpm config set strict-dep-builds false
-         pnpm install --no-frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
       
       - name: Run upstream tests
         if: steps.check.outputs.needed == 'true'
