@@ -81,7 +81,7 @@ jobs:
 
       - name: Install pnpm
         if: steps.check.outputs.needed == 'true'
-        run: npm install -g pnpm
+        run: npm install -g pnpm@9
 
       - name: Install upstream deps
         if: steps.check.outputs.needed == 'true'
