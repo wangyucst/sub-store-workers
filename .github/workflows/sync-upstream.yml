@@ -75,13 +75,13 @@ jobs:
         if: steps.check.outputs.needed == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: sub-store-workers/package-lock.json
 
-      - name: Install pnpm
+      - name: Enable corepack
         if: steps.check.outputs.needed == 'true'
-        run: npm install -g pnpm@9
+        run: corepack enable
 
       - name: Install upstream deps
         if: steps.check.outputs.needed == 'true'
