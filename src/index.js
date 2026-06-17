@@ -181,6 +181,13 @@ export default {
 
             // 路由分发
             const response = await $app.handleRequest(request);
+
+            // 禁止 Cloudflare CDN/边缘节点缓存动态 API 响应
+            // 未设置此头时，不同 URL 路径（如 /share/ 和 /download/）的响应可能被独立缓存，
+            // 导致同一订阅在不同接口返回不一致（陈旧）的数据
+            response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+            response.headers.set('CDN-Cache-Control', 'no-store');
+
             if (isAuthDisabledManagementApi) {
                 response.headers.set('X-Sub-Store-Security-Warning', 'SUB_STORE_FRONTEND_BACKEND_PATH is not configured; management API is public');
             }
