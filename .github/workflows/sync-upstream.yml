@@ -176,6 +176,7 @@ jobs:
           crons = ["55 15 * * *"]
 
           [vars]
+          SCRIPT_ENGINE = "quickjs"
           SUB_STORE_BACKEND_CUSTOM_NAME = "Workers"
           SUB_STORE_BACKEND_CUSTOM_ICON = "https://cdn.jsdelivr.net/gh/Yu9191/sub-store-workers@main/png/cloudflare.png"
           TOML
@@ -198,6 +199,7 @@ jobs:
         run: |
           mkdir -p pages-dist
           cp dist/worker.js pages-dist/_worker.js
+          cp dist/quickjs.wasm pages-dist/quickjs.wasm
 
       - name: Deploy Pages
         if: steps.check.outputs.needed == 'true'
@@ -209,7 +211,6 @@ jobs:
           npx wrangler pages deploy pages-dist \
             --project-name "${{ secrets.PAGES_PROJECT_NAME }}" \
             --branch main \
-            --no-bundle \
             --commit-message "upstream ${{ steps.upstream.outputs.version }}" \
             --commit-dirty=true
 
