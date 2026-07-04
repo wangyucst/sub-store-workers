@@ -115,11 +115,11 @@ const evalRewritePlugin = {
                     /function createDynamicFunction\(name, script, \$arguments, \$options\) \{[\s\S]*?\n\}/,
                     `function createDynamicFunction(name, script, $arguments, $options) {
     const engine = globalThis.__workerEnv?.SCRIPT_ENGINE;
-    if (engine === 'quickjs') {
-        const { createScriptFunction } = require('@/vendor/quickjs-executor');
-        return createScriptFunction(script, name, $arguments, $options);
+    if (engine === 'disabled' || engine === 'none') {
+        throw new Error('Script Operator is disabled. Remove SCRIPT_ENGINE="disabled" from wrangler.toml [vars] to re-enable. Alternative: use built-in filters/operators, mihomo YAML patch, or an external trusted execution service.');
     }
-    throw new Error('Script Operator is not supported. Set SCRIPT_ENGINE="quickjs" in wrangler.toml [vars] to enable. Alternative: use built-in filters/operators, mihomo YAML patch, or an external trusted execution service.');
+    const { createScriptFunction } = require('@/vendor/quickjs-executor');
+    return createScriptFunction(script, name, $arguments, $options);
 }`,
                 );
             }

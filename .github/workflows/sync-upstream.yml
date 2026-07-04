@@ -214,6 +214,37 @@ jobs:
             --commit-message "upstream ${{ steps.upstream.outputs.version }}" \
             --commit-dirty=true
 
+      - name: Set Pages environment variables
+        if: steps.check.outputs.needed == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT_NAME: ${{ secrets.PAGES_PROJECT_NAME }}
+        run: |
+          echo "Setting SCRIPT_ENGINE=quickjs for Pages project: ${PAGES_PROJECT_NAME}"
+          RESP=$(curl -s -X PATCH \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PAGES_PROJECT_NAME}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "deployment_configs": {
+                "production": {
+                  "env_vars": {
+                    "SCRIPT_ENGINE": {
+                      "value": "quickjs",
+                      "type": "plain_text"
+                    }
+                  }
+                }
+              }
+            }')
+          SUCCESS=$(echo "$RESP" | jq -r '.success // false')
+          if [ "$SUCCESS" = "true" ]; then
+            echo "Pages environment variables set successfully"
+          else
+            echo "::warning::Failed to set Pages environment variables: $(echo "$RESP" | jq -r '.errors // []')"
+          fi
+
       - name: Health check
         if: steps.check.outputs.needed == 'true'
         run: |
