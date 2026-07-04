@@ -26,6 +26,7 @@
  */
 
 import quickjsWasmModule from './quickjs.wasm';
+import YAML from '@/utils/yaml';
 
 // 使用全局作用域缓存，避免跨请求重复编译 WASM
 if (typeof globalThis.__quickjsModule === 'undefined') {
@@ -494,6 +495,16 @@ function createScriptFunction(script, name, $arguments, $options) {
  * @returns {*} 执行结果
  */
 async function executeNodeFunc(script, name, api, proxies, targetPlatform, context) {
+    // $content/$files 输入（文件/覆写场景）：复刻上游 ScriptOperator.nodeFunc 的
+    // content 分支，而不是按 proxies 数组遍历（对象没有 length，会返回空数组）。
+    if (
+        name !== 'filter' &&
+        proxies &&
+        (proxies.$content || proxies.$files)
+    ) {
+        return await executeContentScript(script, api, proxies, targetPlatform, context);
+    }
+
     var wrapperScript;
     if (name === 'filter') {
         // filter nodeFunc: fn($server) 返回 boolean，收集到 list
@@ -552,6 +563,111 @@ async function executeNodeFunc(script, name, api, proxies, targetPlatform, conte
     } finally {
         try { _fn.dispose(); } catch (e) { /* ignore */ }
         try { _ctx.dispose(); } catch (e) { /* ignore */ }
+    }
+}
+
+/**
+ * content 模式：处理 $content/$files 输入（复刻上游 ScriptOperator.nodeFunc）
+ *
+ * 上游行为：
+ *   - mihomoConfig/mihomoProfile 文件：执行脚本后若存在 main 函数，
+ *     用 YAML 解析 $content → main(config) → YAML 序列化回 $content
+ *   - 其他文件：直接执行脚本（脚本可读写 $content/$files）
+ *   - 返回 { $content, $files, $options, $file }
+ *
+ * YAML 解析/序列化在宿主环境完成（沙箱内没有 ProxyUtils）。
+ *
+ * @param {string} script - 用户脚本
+ * @param {object} api - API 对象
+ * @param {object} input - { $content, $files, $file, ... }
+ * @param {string} targetPlatform - 目标平台
+ * @param {object} context - 上下文对象
+ * @returns {{$content, $files, $options, $file}}
+ */
+async function executeContentScript(script, api, input, targetPlatform, context) {
+    var $file = input.$file;
+    var $content = input.$content;
+    var $files = input.$files;
+    var $options = input.$options !== undefined ? input.$options : api.$options;
+
+    var contentApi = {};
+    var apiKeys = Object.keys(api);
+    for (var i = 0; i < apiKeys.length; i++) {
+        contentApi[apiKeys[i]] = api[apiKeys[i]];
+    }
+    contentApi.$content = $content !== undefined ? $content : '';
+    contentApi.$files = $files !== undefined ? $files : [];
+    contentApi.$file = $file !== undefined ? $file : null;
+    contentApi.$options = $options !== undefined ? $options : {};
+    contentApi.targetPlatform = targetPlatform;
+    contentApi.context = context !== undefined ? context : {};
+
+    var isMihomo = !!(
+        $file &&
+        ($file.type === 'mihomoConfig' || $file.type === 'mihomoProfile')
+    );
+
+    if (isMihomo) {
+        // 尝试 main 模式：脚本定义 main(config) 返回修改后的配置
+        var sandbox = null;
+        try {
+            sandbox = await executeInSandbox(script, 'main', contentApi);
+        } catch (e) {
+            // 脚本没有定义 main，回退到直接执行模式
+            sandbox = null;
+        }
+
+        if (sandbox) {
+            var _ctx = sandbox.context;
+            var _rt = sandbox.runtime;
+            var _fn = sandbox.fnHandle;
+            try {
+                var config = {};
+                if ($content) {
+                    try {
+                        config = YAML.safeLoad($content) || {};
+                    } catch (e) {
+                        // 解析失败按空配置处理（与上游一致）
+                    }
+                }
+                var callArgs = serializeArgs(_ctx, [config]);
+                var mainResult = await callSandboxFunction(_ctx, _rt, _fn, callArgs);
+                $content = YAML.safeDump(mainResult);
+                return {
+                    $content: $content,
+                    $files: $files,
+                    $options: $options,
+                    $file: $file,
+                };
+            } finally {
+                try { _fn.dispose(); } catch (e) { /* ignore */ }
+                try { _ctx.dispose(); } catch (e) { /* ignore */ }
+            }
+        }
+    }
+
+    // 直接执行模式：脚本读写 $content/$files 全局变量
+    var wrapperScript =
+        'async function operator(input, targetPlatform, context) {\n' +
+        script + ';\n' +
+        '  return { $content: $content, $files: $files, $options: $options, $file: $file };\n' +
+        '}';
+
+    var sandbox2 = await executeInSandbox(wrapperScript, 'operator', contentApi);
+    var _ctx2 = sandbox2.context;
+    var _rt2 = sandbox2.runtime;
+    var _fn2 = sandbox2.fnHandle;
+    try {
+        var callArgs2 = serializeArgs(_ctx2, [input, targetPlatform, context]);
+        var result = await callSandboxFunction(_ctx2, _rt2, _fn2, callArgs2);
+        if (result && typeof result === 'object') {
+            if (result.$file === undefined) result.$file = $file;
+            if (result.$options === undefined) result.$options = $options;
+        }
+        return result;
+    } finally {
+        try { _fn2.dispose(); } catch (e) { /* ignore */ }
+        try { _ctx2.dispose(); } catch (e) { /* ignore */ }
     }
 }
 
