@@ -305,7 +305,7 @@ Pages 需要在 Dashboard 手动添加同名环境变量。不支持 shoutrrr（
 |---|---|---|
 | `SUB_STORE_FRONTEND_BACKEND_PATH` | API 路径前缀密码，推荐用 Worker Secret 管理 | 否（生产环境必设） |
 | `SUB_STORE_PUSH_SERVICE` | HTTP URL 推送地址 | 否 |
-| `SCRIPT_ENGINE` | 设为 `quickjs` 时启用 QuickJS WASM 沙箱执行 Script Operator | 否 |
+| `SCRIPT_ENGINE` | 默认启用 QuickJS WASM 沙箱执行 Script Operator；设为 `disabled` 可关闭 | 否 |
 
 </details>
 
@@ -323,7 +323,7 @@ https://你的域名/你的密码/api/utils/worker-status
 - `auth.managementApiPublic`：管理 API 是否处于公开状态
 - `capabilities`：当前部署支持/不支持的能力（脚本操作、Gist 备份、Cron 等）
 
-**脚本操作（Script Operator）**：Cloudflare Workers 禁止 `eval` / `new Function`，本仓库可通过 QuickJS WASM 沙箱执行 Script Operator。手动部署时在 `wrangler.toml [vars]` 设置 `SCRIPT_ENGINE = "quickjs"`；GitHub Actions 自动同步生成的 `wrangler.toml` 已默认启用。未设置时会返回明确错误。
+**脚本操作（Script Operator）**：Cloudflare Workers 禁止 `eval` / `new Function`，本仓库通过 QuickJS WASM 沙箱执行 Script Operator，**默认启用**，无需额外配置。如需关闭，可在 `wrangler.toml [vars]` 设置 `SCRIPT_ENGINE = "disabled"`。
 
 </details>
 
@@ -467,7 +467,7 @@ esbuild 构建时会从 `Sub-Store/backend/src/` 读取最新源码，重新 bui
 <details>
 <summary><b>GitHub Actions 自动同步上游（推荐）</b></summary>
 
-仓库内置了 `.github/workflows/sync-upstream.yml` 工作流，每天自动检测 Sub-Store 上游更新并部署。自动部署生成的 `wrangler.toml` 已包含 `SCRIPT_ENGINE = "quickjs"`，会默认启用 QuickJS Script Operator。
+仓库内置了 `.github/workflows/sync-upstream.yml` 工作流，每天自动检测 Sub-Store 上游更新并部署。QuickJS Script Operator 默认启用，同时工作流会自动通过 Cloudflare API 为 Pages 项目设置 `SCRIPT_ENGINE` 环境变量，无需手动配置。
 
 #### 工作流程
 

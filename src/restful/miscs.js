@@ -179,11 +179,11 @@ function getWorkerStatus(req, res) {
                     },
                     capabilities: {
                         scriptOperator: {
-                            supported: workerEnv.SCRIPT_ENGINE === 'quickjs',
-                            engine: workerEnv.SCRIPT_ENGINE || 'none',
-                            reason: workerEnv.SCRIPT_ENGINE === 'quickjs'
-                                ? 'Enabled via QuickJS WASM sandbox. Set SCRIPT_ENGINE="quickjs" in wrangler.toml [vars] to keep enabled.'
-                                : 'Disabled. Set SCRIPT_ENGINE="quickjs" in wrangler.toml [vars] to enable.',
+                            supported: workerEnv.SCRIPT_ENGINE !== 'disabled' && workerEnv.SCRIPT_ENGINE !== 'none',
+                            engine: workerEnv.SCRIPT_ENGINE || 'quickjs',
+                            reason: (workerEnv.SCRIPT_ENGINE === 'disabled' || workerEnv.SCRIPT_ENGINE === 'none')
+                                ? 'Disabled via SCRIPT_ENGINE="disabled". Remove to re-enable QuickJS WASM sandbox.'
+                                : 'Enabled via QuickJS WASM sandbox (default). Set SCRIPT_ENGINE="disabled" to turn off.',
                             alternatives: [
                                 'Use built-in filters/operators',
                                 'Use mihomo YAML patch scripts',
