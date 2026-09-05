@@ -383,26 +383,35 @@ Cloudflare KV 免费额度：读 10 万次/天，**写 1000 次/天**。
 
 | 限制 | 说明 |
 |---|---|
-| **请求超时 30 秒** | 单次请求墙钟时间上限 30 秒，订阅源响应慢会超时失败 |
+| **CPU 时间** | 免费版 10 ms / 请求，付费版默认 30 s（`limits.cpu_ms` 可调至 5 min）。注意这是 **CPU 时间不是墙钟时间** —— 墙钟时长本身不限，客户端保持连接就能继续处理，等待慢响应几乎不消耗 CPU |
+| **subrequest 数量** | 免费版 50 个外部请求 / 次调用；付费版默认 10,000，可提至 1000 万 |
+| **隐性超时** | 官方未给 subrequest 定义超时，但社区报告存在未文档化的 ~90 秒截断；经 CDN 代理时另有 524（125 秒 Proxy Read Timeout）。建议自行加 `AbortSignal.timeout()` 控制失败行为，而不是被动等截断 |
 | **出站 IP 为境外** | 从 Cloudflare 节点拉取订阅，部分限制国内 IP 的订阅源无法拉取 |
 | **推送通知** | 仅支持 HTTP URL 方式（Bark、Pushover 等），不支持 shoutrrr |
 
-> 如果你的订阅源限制国内访问或响应较慢，建议使用 VPS 自建 Node.js 版本。
+> 如果你的订阅源限制国内 IP 访问，建议使用 VPS 自建 Node.js 版本。
 
-### Node 专属功能（Workers 无法实现）
+### Node 版有、Workers 版没有的功能
+
+分两类：受运行时限制**确实无法实现**的，和技术上可行但**尚未实现**的。
+
+**受运行时限制**
 
 | 功能 | 原因 |
 |---|---|
-| 前端静态文件托管 | 需要 `express.static` + `fs`，无本地文件系统 |
-| 前端代理中间件 | 需要 `http-proxy-middleware`，Node 专属 |
-| MMDB IP 查询 | 需要读取本地 MMDB 文件（`@maxmind/geoip2-node`） |
-| MMDB 定时下载 | 需要 `fs.writeFile` 写入本地文件 |
-| DATA_URL 启动恢复 | 需要 Node `fs` 写文件 |
-| Gist 备份定时下载 | 从 Gist 下载恢复备份的 Cron（手动触发仍可用） |
-| `ip-flag-node.js` 脚本 | 依赖本地 MMDB，可用 `ip-flag.js`（HTTP API）替代 |
-| jsrsasign TLS 指纹 | 全局作用域限制 |
-| shoutrrr 推送 | 需要 `child_process` 执行命令行工具 |
-| 代理请求 | Workers 出站走 Cloudflare 网络，不支持自定义 HTTP/SOCKS5 代理 |
+| shoutrrr 推送 | 需要 `child_process` 执行命令行工具，Workers 无法运行外部进程。（shoutrrr 支持的 Telegram / Discord / Slack 等本身都是 HTTP API，按其 URL scheme 重新实现是可行的） |
+
+**尚未实现（技术上可行）**
+
+| 功能 | 可行路径 |
+|---|---|
+| 自定义 HTTP/SOCKS5 代理 | `cloudflare:sockets` 的 `connect()` 可对任意外部主机建立出站 TCP 连接并支持 `startTls()`，可用纯 JS 实现代理客户端。注意：必须在 handler 内创建（不能在全局作用域），且不能连 Cloudflare IP 段、私有 IP、端口 25 |
+| 前端静态文件托管 | 不需要 `fs` —— Workers 原生支持 Static Assets（`[assets]` 配置 + `run_worker_first` 让 `/api/*` 先走 Worker），或直接用 Pages 托管前端 |
+| 前端代理中间件 | `http-proxy-middleware` 是 Node 库，但代理功能本身在 Workers 里就是 `fetch(newUrl, request)` |
+| MMDB IP 查询 / 定时下载 | MMDB 格式是二分查找树、支持随机访问，不需整体加载：存 R2 + range read 即可；`fs.writeFile` → R2 put，Cron 已在用 |
+| `DATA_URL` 启动恢复 | 本项目存储本来就走 KV 而非 fs，覆写为写 KV 即可 |
+| Gist 备份定时下载 | `scheduled()` 已在用（见 Cron 同步），加一个下载分支即可。手动触发目前可用 |
+| `ip-flag-node.js` 脚本 | 依赖本地 MMDB；当前用 `ip-flag.js`（HTTP API）替代，MMDB 改走 R2 后即可支持 |
 
 </details>
 
@@ -417,7 +426,7 @@ Cloudflare KV 免费额度：读 10 万次/天，**写 1000 次/天**。
 A: 正常现象，你还没创建同步配置。创建第一个同步后会自动生成。
 
 **Q: 拉取订阅超时**
-A: Workers 单次请求上限 30 秒。如果订阅源响应慢，会超时失败。可尝试换一个订阅链接。
+A: Workers 的墙钟时长本身不限，但有两个实际约束：一是 **CPU 时间**（免费版 10 ms / 请求，付费版默认 30 s，可用 `limits.cpu_ms` 调至 5 min），节点特别多的订阅解析可能撑不住；二是 subrequest 存在未文档化的 ~90 秒截断。可先换一个订阅链接排除源站问题，节点量大的话考虑升级到付费版并调高 `cpu_ms`。
 
 **Q: 某些订阅源返回空或报错**
 A: Workers 出站 IP 为境外 Cloudflare 节点，部分限制国内 IP 的订阅源无法拉取。

@@ -31,6 +31,41 @@ import { gistBackupAction } from '@/restful/miscs';
 import { consumeShareToken } from '@/restful/token';
 import { SETTINGS_KEY, ARTIFACTS_KEY, SUBS_KEY, COLLECTIONS_KEY } from '@/constants';
 import { findByName } from '@/utils/database';
+import {
+    normalizeBackendPath,
+    matchesBackendPath,
+    stripBackendPath,
+} from '@/utils/backend-path';
+
+// CORS 响应头。集中在一处，便于后续从 '*' 收紧为白名单时单点修改
+// （上游 2.38.x 起默认已不再是 '*'，见 ../Sub-Store/backend/src/utils/cors.js）
+const CORS_HEADERS = { 'Access-Control-Allow-Origin': '*' };
+
+/**
+ * 统一构造 `{ status: 'failed', message }` 形态的 JSON 失败响应。
+ *
+ * @param {number} status - HTTP 状态码
+ * @param {string} message - 失败原因
+ * @returns {Response}
+ */
+function jsonFailure(status, message) {
+    return new Response(JSON.stringify({ status: 'failed', message }), {
+        status,
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+    });
+}
+
+/**
+ * 回写 KV 并确保推送完成。正常返回与异常兜底两条路径都要执行。
+ *
+ * @param {ExecutionContext} ctx
+ */
+function flushPending(ctx) {
+    ctx.waitUntil(
+        Promise.all([$.persistCache(), ...($.pendingPushes || [])]),
+    );
+    $.pendingPushes = [];
+}
 
 // 初始化应用及路由
 const $app = express({ substore: $ });
@@ -73,7 +108,7 @@ export default {
             if (request.method === 'OPTIONS') {
                 return new Response(null, {
                     headers: {
-                        'Access-Control-Allow-Origin': '*',
+                        ...CORS_HEADERS,
                         'Access-Control-Allow-Methods': '*',
                         'Access-Control-Allow-Headers': '*',
                         'Access-Control-Max-Age': '86400',
@@ -88,7 +123,13 @@ export default {
             // 配置 SUB_STORE_FRONTEND_BACKEND_PATH = "/你的密码" 后
             // 前端后端地址填: https://xxx.pages.dev/你的密码
             // 管理 API 需要带前缀才能访问，分享链接（download/preview）不受影响
-            const backendPath = env.SUB_STORE_FRONTEND_BACKEND_PATH;
+            //
+            // 归一化处理 '/'、'/密码/'、'密码' 这几种会锁死部署的写法（详见
+            // @/utils/backend-path）：归一化后为空串时按「未设置」处理，管理 API
+            // 公开并发出安全告警，而不是全部返回 401 且无任何入口。
+            const backendPath = normalizeBackendPath(
+                env.SUB_STORE_FRONTEND_BACKEND_PATH,
+            );
             const isPublicPath = /^\/(api\/download|api\/preview|api\/sub\/flow)/.test(pathname);
             const isManagementApi = !isPublicPath && pathname.startsWith('/api/');
             const isAuthDisabledManagementApi = !backendPath && isManagementApi;
@@ -98,10 +139,7 @@ export default {
             if (backendPath) {
                 if (!isPublicPath && pathname.startsWith('/api/')) {
                     // 直接访问 /api/* 没带前缀，拒绝
-                    return new Response(JSON.stringify({ status: 'failed', message: 'Unauthorized' }), {
-                        status: 401,
-                        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-                    });
+                    return jsonFailure(401, 'Unauthorized');
                 }
                 if (pathname === backendPath) {
                     // 精确匹配前缀，重定向到带 / 的路径
@@ -109,13 +147,13 @@ export default {
                         status: 302,
                         headers: {
                             'Location': new URL(backendPath + '/', request.url).toString(),
-                            'Access-Control-Allow-Origin': '*',
+                            ...CORS_HEADERS,
                         },
                     });
                 }
-                if (pathname.startsWith(backendPath + '/')) {
+                if (matchesBackendPath(pathname, backendPath)) {
                     // 带了前缀，剥离后交给路由
-                    pathname = pathname.slice(backendPath.length);
+                    pathname = stripBackendPath(pathname, backendPath);
                     const newUrl = new URL(request.url);
                     newUrl.pathname = pathname;
                     // 通过密码前缀访问才注入 share 标记（与上游 be_merge 行为一致）
@@ -142,18 +180,12 @@ export default {
             // 所有 /share/ 请求都必须携带有效 token，未分享的订阅/文件不可直接访问
             if (pathname.startsWith('/share/')) {
                 if (request.method.toUpperCase() !== 'GET') {
-                    return new Response(JSON.stringify({ status: 'failed', message: 'Method not allowed' }), {
-                        status: 405,
-                        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-                    });
+                    return jsonFailure(405, 'Method not allowed');
                 }
                 const tokenValue = url.searchParams.get('token');
                 if (!tokenValue) {
                     // 未提供 token，拒绝访问
-                    return new Response(JSON.stringify({ status: 'failed', message: 'Share token is required' }), {
-                        status: 403,
-                        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-                    });
+                    return jsonFailure(403, 'Share token is required');
                 }
                 const decodedPathname = decodeURIComponent(pathname);
                 const shareToken = consumeShareToken({
@@ -170,10 +202,7 @@ export default {
                         fakeUrl.searchParams.set('_fakeNode', 'true');
                         request = new Request(fakeUrl.toString(), request);
                     } else {
-                        return new Response(JSON.stringify({ status: 'failed', message: 'Invalid or expired share token' }), {
-                            status: 404,
-                            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-                        });
+                        return jsonFailure(404, 'Invalid or expired share token');
                     }
                 }
                 // token 有效，继续正常路由
@@ -193,53 +222,26 @@ export default {
             }
 
             // 回写 KV + 确保推送完成
-            ctx.waitUntil(Promise.all([
-                $.persistCache(),
-                ...($.pendingPushes || []),
-            ]));
-            $.pendingPushes = [];
+            flushPending(ctx);
 
             return response;
         } catch (e) {
             console.error(`Unhandled error: ${e.message}\n${e.stack}`);
             // 出错也尝试回写
-            ctx.waitUntil(Promise.all([
-                $.persistCache(),
-                ...($.pendingPushes || []),
-            ]));
-            $.pendingPushes = [];
-            return new Response(
-                JSON.stringify({
-                    status: 'failed',
-                    message: 'Internal Server Error',
-                }),
-                {
-                    status: 500,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*',
-                    },
-                },
-            );
+            flushPending(ctx);
+            return jsonFailure(500, 'Internal Server Error');
         }
     },
 };
 
 function validateKVBinding(env) {
     if (env?.SUB_STORE_DATA?.get && env?.SUB_STORE_DATA?.put) return null;
-    const body = JSON.stringify({
-        status: 'failed',
-        message: 'Missing KV binding: SUB_STORE_DATA. Please bind a Cloudflare KV namespace named SUB_STORE_DATA before running Sub-Store Workers.',
-    });
     return {
         message: 'Missing KV binding: SUB_STORE_DATA',
-        response: new Response(body, {
-            status: 500,
-            headers: {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*',
-            },
-        }),
+        response: jsonFailure(
+            500,
+            'Missing KV binding: SUB_STORE_DATA. Please bind a Cloudflare KV namespace named SUB_STORE_DATA before running Sub-Store Workers.',
+        ),
     };
 }
 

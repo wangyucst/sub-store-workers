@@ -1,6 +1,7 @@
 node_modules/
 dist/
 pages-dist/_worker.js
+pages-dist/quickjs.wasm
 .wrangler/
 .dev.vars
 wrangler.toml

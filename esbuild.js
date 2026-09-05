@@ -1,11 +1,70 @@
 #!/usr/bin/env node
 const { build } = require('esbuild');
+const { execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
 // 路径配置
 const WORKERS_SRC = path.resolve(__dirname, 'src');
 const ORIGINAL_SRC = path.resolve(__dirname, '..', 'Sub-Store', 'backend', 'src');
+const UPSTREAM_REPO = path.resolve(__dirname, '..', 'Sub-Store');
+const UPSTREAM_SHA_FILE = path.resolve(__dirname, '.upstream-sha');
+
+/**
+ * 校验 ../Sub-Store 的实际版本与 .upstream-sha 标记是否一致。
+ *
+ * 这是**本地开发**的护栏：本地构建直接读 ../Sub-Store/backend/src/，没有任何闸门，
+ * 上游被 git pull 到新版本后，构建会静默使用新代码而标记仍是旧的，产物无法复现。
+ *
+ * CI 下默认跳过：sync-upstream.yml 里 .upstream-sha 的语义是「上次同步到哪个版本」，
+ * 检出的上游必然更新（否则不会触发构建），构建时不一致正是正常状态，标记要到流程
+ * 最后一步才更新。若确实想在 CI 强制校验，显式传 --strict。
+ *
+ * 默认仅警告，传 --strict 时失败。
+ */
+function checkUpstreamVersion() {
+    const strict = process.argv.includes('--strict');
+
+    if (process.env.CI && !strict) {
+        console.log('[upstream] CI 环境，跳过 SHA 校验（同步流程中不一致属正常）');
+        return;
+    }
+
+    if (!fs.existsSync(UPSTREAM_SHA_FILE)) return;
+
+    const expected = fs.readFileSync(UPSTREAM_SHA_FILE, 'utf8').trim();
+    if (!expected) return;
+
+    let actual;
+    try {
+        actual = execFileSync('git', ['-C', UPSTREAM_REPO, 'rev-parse', 'HEAD'], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+    } catch (e) {
+        // 上游不是 git 仓库（如 CI 用 tarball 展开），跳过校验
+        return;
+    }
+
+    if (actual === expected) {
+        console.log(`[upstream] SHA 一致: ${expected.slice(0, 8)}`);
+        return;
+    }
+
+    const msg =
+        `上游版本与 .upstream-sha 不一致\n` +
+        `  .upstream-sha : ${expected.slice(0, 8)}\n` +
+        `  ../Sub-Store  : ${actual.slice(0, 8)}\n` +
+        `  产物将基于 ../Sub-Store 的实际代码构建，与标记版本不符。\n` +
+        `  修正: cd ../Sub-Store && git checkout ${expected.slice(0, 8)}\n` +
+        `  或更新标记: echo ${actual} > .upstream-sha`;
+
+    if (strict) {
+        console.error(`[upstream] ${msg}`);
+        process.exit(1);
+    }
+    console.warn(`[upstream] 警告: ${msg}`);
+}
 
 /** 插件：路径别名解析 */
 function resolveFile(basePath) {
@@ -226,6 +285,11 @@ const nodeStubPlugin = {
             'child_process',
             'stream/promises',
             'mime-types',
+            // jsrsasign 必须存根：它在模块加载时（全局作用域）就生成随机数种子，
+            // 而 Workers 禁止在全局作用域生成随机值 / 做异步 IO / 设置定时器，
+            // 真实打包会导致 wrangler deploy 被服务端校验拒绝（code 10021）。
+            // 代价：上游 utils/rs.js 的 generateFingerprint 不可用，节点设
+            // ca-str/ca_str 时会抛错（既存问题，见 codemap 已知风险）。
             'jsrsasign',
             'fs',
             'path',
@@ -268,6 +332,8 @@ const nodeStubPlugin = {
     console.log('Building Sub-Store Workers...');
     console.log(`Workers source: ${WORKERS_SRC}`);
     console.log(`Original source: ${ORIGINAL_SRC}`);
+
+    checkUpstreamVersion();
 
     await build({
         entryPoints: [path.join(WORKERS_SRC, 'index.js')],

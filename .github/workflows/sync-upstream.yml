@@ -127,6 +127,11 @@ jobs:
         working-directory: sub-store-workers
         run: npm ci
 
+      - name: Run workers tests
+        if: steps.check.outputs.needed == 'true'
+        working-directory: sub-store-workers
+        run: npm test
+
       - name: Build worker
         if: steps.check.outputs.needed == 'true'
         working-directory: sub-store-workers
